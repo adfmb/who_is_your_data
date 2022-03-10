@@ -1,0 +1,420 @@
+---
+title: "Multinomial logistic regression"
+subtitle: "Through gradient descent"
+output: html_notebook
+---
+```{r}
+library(dplyr)
+```
+
+# Accuracy {.tabset}
+
+## USIDNET
+```{r}
+library(dplyr)
+USIDNET_reducida_04a<-readRDS(paste0("data/","USIDNET_reducida_04a",".rds"))
+USIDNET_reducida_04a
+```
+
+**Train / Test Split**
+
+```{r}
+# lista_data_acc<-list()
+USIDNET_reducida_05<-as.data.frame(USIDNET_reducida_04a)
+USIDNET_reducida_05$dx<-as.numeric(as.factor(USIDNET_reducida_05$Category))
+library(caret)
+prop_extraer_base<-.75
+
+set.seed(prop_extraer_base*100)
+inTrain <- createDataPartition(y = USIDNET_reducida_05$dx,
+                                     ## the outcome data are needed
+                                     p = prop_extraer_base,#prop_para_partition_malos,
+                                     ## The percentage of data in the
+                                     ## training set
+                                     list = FALSE)
+pob00_train0 <- USIDNET_reducida_05[ inTrain,]
+pob00_test0 <- USIDNET_reducida_05[ -inTrain,]
+pob00_train0%>%as_data_frame(); pob00_test0%>%as_data_frame()
+#names(pob00_train0)
+```
+
+**Prep data for training**
+```{r}
+source("utils/descenso_gradiente_bbva.R")
+x_ent <- pob00_train0 %>% 
+  select( -id_px, -Category,-dx
+  #   one_of(
+  #     unique(subgb02_data01$VARIABLE_NUEVA_CLASIFICACION1[subgb02_data01$VARIABLE_NUEVA_CLASIFICACION1%in%names(USIDNET_reducida_01)]))
+  # )%>%
+  ) %>%
+  as.matrix
+y_ent <- pob00_train0$dx
+x_ent_s <- scale(x_ent)
+medias <- attr(x_ent_s, 'scaled:center')
+sd <- attr(x_ent_s, 'scaled:scale')
+
+x_ent%>%as_data_frame();x_ent_s%>%as_data_frame()
+```
+
+**Prep data test**
+```{r}
+x_pr <- pob00_test0  %>% 
+  select( -id_px, -Category,-dx
+  #   one_of(
+  #     unique(subgb02_data01$VARIABLE_NUEVA_CLASIFICACION1[subgb02_data01$VARIABLE_NUEVA_CLASIFICACION1%in%names(USIDNET_reducida_01)]))
+  # )%>%
+  ) %>%
+  as.matrix
+y_pr <- pob00_test0$dx
+
+x_pr%>%as_data_frame()
+```
+
+**Hyperparameters & Iterations**
+```{r}
+p<-ncol(x_ent)
+K<-length(unique(USIDNET_reducida_05$dx))
+# dev_ent <- devianza_calc(x = x_ent_s,y =  y_ent)
+# grad <- grad_calc(x_ent = x_ent_s, y_ent)
+
+dev_ent <- devianza_calc(x = x_ent_s,y =  y_ent)
+grad <- grad_calc(x_ent = x_ent_s, y_ent)
+
+iteraciones05 <- descenso(5001,rep(0, (p+1)*(K-1)), eta=0.0001, 
+                          h_deriv = grad, dev_fun = dev_ent)
+iteraciones<-iteraciones05
+devianzas_iteraciones<-sapply(1:nrow(iteraciones),function(i) dev_ent(iteraciones[i,]))
+df_devianzas_iteraciones<-data.frame(
+  id=1:nrow(iteraciones),
+  devianzas=devianzas_iteraciones
+)
+
+saveRDS(iteraciones,"data/iteraciones_5001_0s_0.0001_copy.rds")
+```
+
+**All the deviances**
+```{r}
+# iteraciones<-readRDS("data/iteraciones_5001_0s_0.0001_copy.rds")
+p<-ncol(x_ent)
+K<-length(unique(USIDNET_reducida_05$dx))
+dev_ent <- devianza_calc(x = x_ent_s,y =  y_ent)
+grad <- grad_calc(x_ent = x_ent_s, y_ent)
+
+devianzas_iteraciones<-sapply(1:nrow(iteraciones),function(i) dev_ent(iteraciones[i,]))
+df_devianzas_iteraciones<-data.frame(
+  id=1:nrow(iteraciones),
+  deviances=devianzas_iteraciones
+)
+df_devianzas_iteraciones
+```
+
+```{r}
+lista_data_acc<-list()
+
+top5<-head(df_devianzas_iteraciones%>%arrange(deviances))
+data_acc<-data_frame()
+for(id_top in 1: nrow(top5)){
+  id_mindev<-top5[id_top,1]
+  print(paste0("-------->>>> id: ",id_top,"<<<<--------"))
+  print(id_mindev)
+  
+  print("deviance:")
+  print(dev_ent(iteraciones[id_mindev,]))
+  
+  probas <- pred_multinom(x_ent_s, iteraciones[id_mindev,])
+  clase <- apply(probas, 1, which.max)
+  print("train:")
+  #print(table(clase, y_ent ))
+  acc_train<-1 - mean(clase != y_ent)
+  print(acc_train)
+  
+  x_pr_s <- scale(x_pr, center = medias, scale = sd)
+  probas <- pred_multinom(x_pr_s, iteraciones[id_mindev,])
+  clase <- apply(probas, 1, which.max)
+  print("test:")
+  #print(table(clase, y_pr ))
+  acc_test<-1 - mean(clase != y_pr)
+  print(acc_test)
+  
+  data_acc<-data_acc%>%
+    bind_rows(
+      data_frame(
+        id=id_mindev,
+        dev_train=dev_ent(iteraciones[id_mindev,]),
+        acc_train=acc_train,
+        acc_test=acc_test 
+      )
+    )
+}
+# idmin<-data_acc%>%
+#   filter(acc_test==max(acc_test))%>%
+#   filter(acc_train==max(acc_train))%>%
+#   filter(id==min(id))%>%
+#   pull(id)
+idmin<-data_acc%>%
+  filter(dev_train==min(dev_train))%>%
+  filter(acc_test==max(acc_test))%>%
+  filter(acc_train==max(acc_train))%>%
+  filter(id==min(id))%>%
+  pull(id)
+
+
+print("--------------------------------------------")
+print("--------------- BEST  RESULT --------------")
+print("-------------- A C C U R A C Y --------------")
+probas <- pred_multinom(x_ent_s, iteraciones[idmin,])
+clase <- apply(probas, 1, which.max)
+print("train:")
+table_train<-table(clase, y_ent)
+accuracy_train<-1 - mean(clase != y_ent)
+print(accuracy_train)
+
+print("
+...
+      ")
+
+x_pr_s <- scale(x_pr, center = medias, scale = sd)
+probas <- pred_multinom(x_pr_s, iteraciones[idmin,])
+clase <- apply(probas, 1, which.max)
+print("test:")
+table_test<-table(clase, y_pr )
+accuracy_test<-1 - mean(clase != y_pr)
+print(accuracy_test)
+
+
+mean(table_test)
+# lista_data_acc[[paste0("init",length(lista_data_acc))]]<-list(
+lista_data_acc[["usidnet4a"]]<-list(
+  "data_acc"=data_acc,
+  "idmin"=idmin,
+  "table_train"=table_train,
+  "table_test"=table_test,
+  "accuracy_train"=accuracy_train,
+  "accuracy_test"=accuracy_test
+)
+
+
+print("
+...
+      ")
+
+print("--------------------------------------------")
+print("-------------- CONFUSION MATRIX -------------")
+
+print("train:")
+lista_data_acc$usidnet4a$table_train;
+print("test:")
+lista_data_acc$usidnet4a$table_test;
+saveRDS(lista_data_acc,"data/lista_data_acc_usidnet4a_copy.rds")
+```
+
+
+# Importances / Weights for feature 
+
+
+**Taking the betas from minimum deviance**
+```{r}
+data_acc<-lista_data_acc$usidnet4a$data_acc
+# idmin<-data_acc%>%
+#   filter(acc_test==max(acc_test))%>%
+#   filter(acc_train==max(acc_train))%>%
+#   filter(id==min(id))%>%
+#   pull(id)
+idmin<-data_acc%>%
+  filter(dev_train==min(dev_train))%>%
+  filter(id==min(id))%>%
+  pull(id)
+betas<-iteraciones[idmin,]
+# betas
+#p;K;
+#(p+1)*(K-1);
+#length(betas)
+
+
+df_betas <- as_data_frame(matrix(betas, K - 1, p + 1 , byrow = TRUE))%>%
+  bind_rows(
+    as_data_frame(matrix(c(1,rep(0,p)),nrow=1))
+    )%>%
+  mutate(
+    dx=as.character(row_number())
+  )%>%
+  left_join(
+    USIDNET_reducida_05%>%
+      group_by(dx,Category)%>%
+      summarise(
+        n=n()
+      )%>%
+      ungroup()%>%
+      mutate(
+        dx=as.character(dx),
+        prop=round(n/sum(n),3)
+      )
+  )%>%
+  select(dx,Category,n,prop,one_of(names(.)))
+  
+names(df_betas)<-c("dx","Category","n","prop",paste0("beta_",(seq(p+1)-1)))
+df_betas
+# prod_matrices<-as.matrix(cbind(1, x)) %*% t(beta_mat)
+```
+
+**Calculating weights for feature per Dx**
+```{r}
+excluir<-c("dx","Category","n","prop")
+    ptsig00<-as.data.frame(
+      pob00_train0%>% 
+        # select( -id_px, -Category, -dx)%>%
+        select( -id_px, -Category)%>%
+        mutate(intercept=1)%>%
+        select(dx,intercept, one_of(names(.)))
+  )#[c("malos","denomsy",names(siestan)[!names(siestan)%in%excluir])]
+
+lista_resultados<-list()
+tbl_pesos<-data_frame()
+for(clase_i in 1:K){
+  # clase_i<-1
+  print(clase_i)
+  dx_tmp<-pob00_train0%>%filter(dx==clase_i)%>%distinct(Category)%>%pull(Category)
+  n_tmp<-df_betas%>%filter(dx==clase_i)%>%distinct(n)%>%pull(n)
+  prop_tmp<-df_betas%>%filter(dx==clase_i)%>%distinct(prop)%>%pull(prop)
+  print(dx_tmp)
+  siestan<-as.data.frame(df_betas)[clase_i,]
+  # ptsig00<-pob_test[c("malos","denomsy",names(siestan)[!names(siestan)%in%excluir])]
+  #   ptsig<-as.data.frame(apply(ptsig00,2,as.numeric))
+    ptsig<-as.data.frame(apply(ptsig00,2,as.numeric))
+    varTi<-0
+    # data_vars<-as.data.frame(ptsig[1,names(siestan)[!names(siestan)%in%excluir][-1]])
+    data_vars<-as.data.frame(ptsig[1,names(ptsig00)[-c(1:2)]])
+    names(data_vars)<-names(ptsig00)[-c(1:2)]
+    data_vars[1,]<-0
+    data_vars[2,]<-0
+    # data_vars[3,]<-0
+    
+    for(j in 1:(length(names(ptsig))-2)){
+      # j<-1
+      #print(names(ptsig)[j+2])
+      #print(names(siestan[!names(siestan)%in%excluir][1+j]))
+      betawoe<-ptsig[,2+j]*as.numeric(siestan[!names(siestan)%in%excluir][1+j])
+      ptsig<-cbind(ptsig,betawoe)
+      
+      varj<-round(sd(ptsig$betawoe),4)
+      
+      # woe_var<-names(siestan)[!names(siestan)%in%excluir][j+1]
+      # var_original<-gsub("woe_","",woe_var)
+      # mtr3_tmp<-MTR3_yk(ptsig[,3+j],ptsig$malos,ptsig$denomsy)
+      
+      # gini<-as.data.frame(
+      #   df_ginis%>%
+      #     filter(var==woe_var)
+      # )$Gini #unique(lmtr5$lista$woes_nesp$Gini[lmtr5$lista$woes_nesp$var==var_tmp])
+      # mtr4_tmp<-MTR4_yk(ptsig,"woe_IM_MEDIO_PAGO_TDC_6M",vobj = "malos",denomsy = ptsig$denomsy)
+      
+      data_vars[1,names(ptsig)[j+2]]<-names(siestan[!names(siestan)%in%excluir][1+j])
+      data_vars[2,names(ptsig)[j+2]]<-varj
+      # data_vars[3,names(ptsig)[j+2]]<-names(ptsig)[j+2]
+      # data_vars[3,names(siestan)[!names(siestan)%in%excluir][1+j]]<-gini #max(mtr3_tmp$ga,mtr3_tmp$gd)
+      
+      varTi<-varTi + varj
+      
+      names(ptsig)[ncol(ptsig)]<-paste("beta",gsub(" ","_",names(ptsig)[2+j]),sep="_")
+      
+    }
+    data_vars$varTi<-varTi
+    # data_vars$varTi[3]<-0
+    pesos<-round(as.numeric(data_vars[2,])/data_vars$varTi[2],4)
+    data_vars<-rbind(data_vars,pesos)
+    row.names(data_vars)<-c("id_beta","desviacion_s","pesos")#"nombre_original","pesos")
+    #print(data_vars)
+    data_vars<-as.data.frame(t(data_vars))
+    #print(data_vars)
+    
+    #print(length(t(siestan[!names(siestan)%in%excluir][-1])))
+    #blabla<-t(siestan[!names(siestan)%in%excluir][-1])
+    #print(blabla)
+    data_vars$beta_value <- c(t(siestan[!names(siestan)%in%excluir][-1]),-9999)
+    data_vars$clase_i<-clase_i
+    data_vars$Diagnostico<-dx_tmp
+    data_vars$num_casos_dx<-n_tmp
+    data_vars$proporcion_casos_dx<-prop_tmp
+    data_vars$variable<-row.names(data_vars)
+    
+    # data_vars<-data_vars[,c(6,1:5)]
+    data_vars<-data_vars%>%
+      select(Diagnostico,clase_i,num_casos_dx,proporcion_casos_dx,variable,id_beta,beta_value,desviacion_s,pesos)
+    
+    
+    tbl_pesos<-rbind(tbl_pesos,data_vars)
+}
+
+tbl_pesos<-tbl_pesos%>%
+  mutate(
+    variable=gsub('Bajo','low',variable),
+    variable=gsub('Alto','high',variable),
+    variable=gsub('LINFOCITOS','Lymphocytes',variable),
+    variable=gsub('LEUCOCITOS','Leukocytes',variable),
+    variable=gsub('MONOCITOS','Monocytes',variable),
+    variable=gsub('NEUTROFILOS','Neutrophils',variable),
+    variable=gsub('PLAQUETAS','Plateletes',variable),
+    variable=gsub('EOSINOFILOS','Eosinophils',variable),
+    variable=gsub('Dolor_abdominal','I_Abdominal_pain',variable),
+    variable=gsub('Reflujo_gastroesofagico','I_Gastroesophageal_reflux',variable),
+    variable=gsub('Dolor_toracico','I_Thoracic_pain',variable),
+    variable=gsub('Dolor','I_Pain',variable),
+    variable=gsub('Alto','high',variable)
+  )
+tbl_pesos%>%
+  select(Diagnostico,num_casos_dx,proporcion_casos_dx,variable,beta_value,pesos)%>%
+  rename(Dx = Diagnostico)%>%
+  rename(number_cases_per_dx = num_casos_dx)%>%
+  rename(percentage_cases_per_dx = proporcion_casos_dx)%>%
+  rename(feature = variable)%>%
+  rename(weight_importance = pesos)
+```
+
+
+**Top 5 more important features per DX**
+
+```{r}
+tbl_pesos_00<-tbl_pesos%>%
+  mutate(
+    desviacion_s=as.numeric(desviacion_s),
+    pesos=as.numeric(pesos)
+  )%>%
+  # filter(variable!="varTi")%>%
+  arrange(desc(proporcion_casos_dx),Diagnostico,desc(pesos))
+saveRDS(tbl_pesos_00,"data/tbl_pesos_00_usidnet4a_iteraciones_5001_0s_0.0001_copy.rds")
+
+tbl_pesos_00<-readRDS("data/tbl_pesos_00_usidnet4a_iteraciones_5001_0s_0.0001_copy.rds")
+
+
+tbl_pesos_01<-tbl_pesos_00%>%
+  filter(variable!="varTi")%>%
+  group_by(Diagnostico)%>%
+  arrange(Diagnostico,desc(pesos))%>%
+  mutate(
+    nivel_pesos=row_number()
+  )%>%
+  ungroup()%>%
+  arrange(desc(proporcion_casos_dx),Diagnostico,desc(pesos))
+
+saveRDS(tbl_pesos_01,"data/tbl_pesos_01_usidnet4a_iteraciones_5001_0s_0.0001_copy.rds")
+write.csv(tbl_pesos_01,"data/tbl_pesos_01_usidnet4a_iteraciones_5001_0s_0.0001_copy.csv",row.names = F)
+
+
+tbl_pesos_01%>%
+  group_by(Diagnostico)%>%
+  arrange(Diagnostico,desc(pesos))%>%
+  mutate(
+    nivel_pesos=row_number()
+  )%>%
+  filter(nivel_pesos<=5)%>%
+  ungroup()%>%
+  arrange(desc(proporcion_casos_dx),Diagnostico,desc(pesos))%>%
+  select(Diagnostico,variable,beta_value,pesos)%>%
+  rename(Dx = Diagnostico)%>%
+  rename(feature = variable)%>%
+  rename(weight_importance = pesos)
+```
+
+# Final Comments
+
+* Since the best model's performance is too low (~`54% in test sample`), **it's been decided to try with another Machine Learning Technique such as `XGBoost`**
